@@ -77,7 +77,7 @@ func (api *OtterscanAPIImpl) GetInternalOperations(ctx context.Context, hash com
 	}
 	defer tx.Rollback()
 
-	txn, blockHash, _, txIndex, err := rawdb.ReadTransaction(tx, hash)
+	txn, blockHash, _, txIndex, err := rawdb.ReadTransactionByHash(tx, hash)
 	if err != nil {
 		return nil, err
 	}
@@ -530,7 +530,7 @@ func (api *OtterscanAPIImpl) TraceTransaction(ctx context.Context, hash common.H
 	}
 	defer tx.Rollback()
 
-	txn, blockHash, _, txIndex, err := rawdb.ReadTransaction(tx, hash)
+	txn, blockHash, _, txIndex, err := rawdb.ReadTransactionByHash(tx, hash)
 	if err != nil {
 		return nil, err
 	}
@@ -573,7 +573,7 @@ func (api *OtterscanAPIImpl) GetTransactionError(ctx context.Context, hash commo
 	}
 	defer tx.Rollback()
 
-	txn, blockHash, _, txIndex, err := rawdb.ReadTransaction(tx, hash)
+	txn, blockHash, _, txIndex, err := rawdb.ReadTransactionByHash(tx, hash)
 	if err != nil {
 		return nil, err
 	}
@@ -742,7 +742,10 @@ func findNonce(tx kv.Tx, addr common.Address, nonce uint64, blockNum uint64) (bo
 	if err != nil {
 		return false, common.Hash{}, err
 	}
-	body := rawdb.ReadBodyWithTransactions(tx, hash, blockNum)
+	body, err := rawdb.ReadBodyWithTransactions(tx, hash, blockNum)
+	if err != nil {
+		return false, common.Hash{}, err
+	}
 
 	for i, s := range senders {
 		if s != addr {
