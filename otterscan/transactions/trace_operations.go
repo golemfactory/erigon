@@ -2,13 +2,13 @@ package otterscan
 
 import (
 	"context"
-	"github.com/ledgerwatch/erigon/common/hexutil"
 	"math/big"
 	"time"
 
+	"github.com/ledgerwatch/erigon/common/hexutil"
+
 	"github.com/ledgerwatch/erigon/common"
 	"github.com/ledgerwatch/erigon/core/vm"
-	"github.com/ledgerwatch/erigon/core/vm/stack"
 )
 
 type OperationType int
@@ -39,14 +39,14 @@ func NewOperationsTracer(ctx context.Context) *OperationsTracer {
 	}
 }
 
-func (l *OperationsTracer) CaptureStart(depth int, from common.Address, to common.Address, precompile bool, create bool, calltype vm.CallType, input []byte, gas uint64, value *big.Int, code []byte) error {
+func (l *OperationsTracer) CaptureStart(env *vm.EVM, depth int, from common.Address, to common.Address, precompile bool, create bool, calltype vm.CallType, input []byte, gas uint64, value *big.Int, code []byte) {
 	if depth == 0 {
-		return nil
+		return
 	}
 
 	if calltype == vm.CALLT && value.Uint64() != 0 {
 		l.Results = append(l.Results, &InternalOperation{TRANSFER, from, to, (*hexutil.Big)(value)})
-		return nil
+		return
 	}
 	if calltype == vm.CREATET {
 		l.Results = append(l.Results, &InternalOperation{CREATE, from, to, (*hexutil.Big)(value)})
@@ -54,20 +54,15 @@ func (l *OperationsTracer) CaptureStart(depth int, from common.Address, to commo
 	if calltype == vm.CREATE2T {
 		l.Results = append(l.Results, &InternalOperation{CREATE2, from, to, (*hexutil.Big)(value)})
 	}
-
-	return nil
 }
 
-func (l *OperationsTracer) CaptureState(env *vm.EVM, pc uint64, op vm.OpCode, gas, cost uint64, memory *vm.Memory, stack *stack.Stack, rData []byte, contract *vm.Contract, depth int, err error) error {
-	return nil
+func (l *OperationsTracer) CaptureState(env *vm.EVM, pc uint64, op vm.OpCode, gas, cost uint64, scope *vm.ScopeContext, rData []byte, depth int, err error) {
 }
 
-func (l *OperationsTracer) CaptureFault(env *vm.EVM, pc uint64, op vm.OpCode, gas, cost uint64, memory *vm.Memory, stack *stack.Stack, contract *vm.Contract, depth int, err error) error {
-	return nil
+func (l *OperationsTracer) CaptureFault(env *vm.EVM, pc uint64, op vm.OpCode, gas, cost uint64, scope *vm.ScopeContext, depth int, err error) {
 }
 
-func (l *OperationsTracer) CaptureEnd(depth int, output []byte, startGas, endGas uint64, t time.Duration, err error) error {
-	return nil
+func (l *OperationsTracer) CaptureEnd(depth int, output []byte, startGas, endGas uint64, t time.Duration, err error) {
 }
 
 func (l *OperationsTracer) CaptureSelfDestruct(from common.Address, to common.Address, value *big.Int) {
