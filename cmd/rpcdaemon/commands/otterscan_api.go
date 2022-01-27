@@ -348,10 +348,10 @@ func (api *OtterscanAPIImpl) delegateIssuance(tx kv.Tx, block *types.Block, chai
 	}
 
 	var ret Issuance
-	ret.BlockReward = hexutil.EncodeBig(minerReward.ToBig())
-	ret.Issuance = hexutil.EncodeBig(issuance.ToBig())
+	ret.BlockReward = minerReward.ToBig()
+	ret.Issuance = issuance.ToBig()
 	issuance.Sub(&issuance, &minerReward)
-	ret.UncleReward = hexutil.EncodeBig(issuance.ToBig())
+	ret.UncleReward = issuance.ToBig()
 	return ret, nil
 }
 
@@ -388,7 +388,7 @@ func (api *OtterscanAPIImpl) getBlockWithSenders(number rpc.BlockNumber, tx kv.T
 		return nil, nil, err
 	}
 
-	block, senders, err := rawdb.ReadBlockByNumberWithSenders(tx, n)
+	block, senders, err := rawdb.CanonicalBlockByNumberWithSenders(tx, n)
 	return block, senders, err
 }
 
