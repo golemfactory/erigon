@@ -90,7 +90,7 @@ System Requirements
 * For an Archive node of Ethereum Mainnet we recommend >=3TB storage space: 1.8TB state (as of March 2022),
 200GB temp files (can symlink or mount folder `<datadir>/etl-tmp` to another disk). Ethereum Mainnet Full node (see `--prune*` flags): 400Gb (April 2022).
 
-* Goerli Full node (see `--prune*` flags): 189GB on Beta, 114GB on Alpha (April 2022).
+* Goerli Full node (see `--prune*` flags): 189GB on Beta, 114GB on Alpha (April 2022)..
 
 * BSC Archive: 7TB. BSC Full: 1TB.
 
@@ -231,36 +231,36 @@ C:\ProgramData\chocolatey\lib\mingw\tools\install\mingw64\bin
 You can set Erigon flags through a YAML or TOML configuration file with the flag `--config`. The flags set in the configuration
 file can be overwritten by writing the flags directly on Erigon command line
 
-## Example
+### Example
 
 `./build/bin/erigon --config ./config.yaml --chain=goerli
 
 Assuming we have `chain : "mainnet" in our configuration file, by adding `--chain=goerli` allows the overwrite of the flag inside
 of the yaml configuration file and sets the chain to goerli
 
-## TOML 
+### TOML 
 
 Example of setting up TOML config file
 
 ```
 `datadir = 'your datadir'
-port = "1111"
+port = 1111
 chain = "mainnet"
-http = "true"
+http = true
 "private.api.addr"="localhost:9090"
 
 "http.api" = ["eth","debug","net"]
 ```
 
-## YAML 
+### YAML 
 
 Example of setting up a YAML config file
 
 ```
 datadir : 'your datadir'
-port : "1111"
+port : 1111
 chain : "mainnet"
-http : "true"
+http : true
 private.api.addr : "localhost:9090"
 
 http.api : ["eth","debug","net"]

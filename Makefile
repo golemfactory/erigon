@@ -98,7 +98,7 @@ geth: erigon
 erigon: go-version erigon.cmd
 	@rm -f $(GOBIN)/tg # Remove old binary to prevent confusion where users still use it because of the scripts
 
-COMMANDS += devnettest
+COMMANDS += devnet
 COMMANDS += downloader
 COMMANDS += hack
 COMMANDS += integration
@@ -111,6 +111,7 @@ COMMANDS += state
 COMMANDS += txpool
 COMMANDS += verkle
 COMMANDS += evm
+COMMANDS += lightclient
 
 # build each command using %.cmd rule
 $(COMMANDS): %: %.cmd
@@ -132,12 +133,15 @@ db-tools:
 test:
 	$(GOTEST) --timeout 50s
 
-test22:
-	$(GOTEST) --timeout 50s -tags erigon22
+test3:
+	$(GOTEST) --timeout 50s -tags $(BUILD_TAGS),erigon3
 
 ## test-integration:                  run integration tests with a 30m timeout
 test-integration:
 	$(GOTEST) --timeout 30m -tags $(BUILD_TAGS),integration
+
+test3-integration:
+	$(GOTEST) --timeout 30m -tags $(BUILD_TAGS),integration,erigon3
 
 ## lint:                              run golangci-lint with .golangci.yml config file
 lint:

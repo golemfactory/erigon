@@ -27,6 +27,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/gballet/go-verkle"
 	common2 "github.com/ledgerwatch/erigon-lib/common"
 	libcommon "github.com/ledgerwatch/erigon-lib/common/cmp"
 	"github.com/ledgerwatch/erigon-lib/common/dbg"
@@ -1314,6 +1315,7 @@ func TruncateBlocks(ctx context.Context, tx kv.RwTx, blockFrom uint64) error {
 	if blockFrom < 1 { //protect genesis
 		blockFrom = 1
 	}
+	sequenceTo := map[string]uint64{}
 	for k, _, err := c.Last(); k != nil; k, _, err = c.Prev() {
 		if err != nil {
 			return err
@@ -1345,9 +1347,7 @@ func TruncateBlocks(ctx context.Context, tx kv.RwTx, blockFrom uint64) error {
 			}); err != nil {
 				return err
 			}
-			if err := ResetSequence(tx, bucket, b.BaseTxId); err != nil {
-				return err
-			}
+			sequenceTo[bucket] = b.BaseTxId
 		}
 		// Copying k because otherwise the same memory will be reused
 		// for the next key and Delete below will end up deleting 1 more record than required
@@ -1365,6 +1365,11 @@ func TruncateBlocks(ctx context.Context, tx kv.RwTx, blockFrom uint64) error {
 		case <-logEvery.C:
 			log.Info("TruncateBlocks", "block", n)
 		default:
+		}
+	}
+	for bucket, sequence := range sequenceTo {
+		if err := ResetSequence(tx, bucket, sequence); err != nil {
+			return err
 		}
 	}
 
@@ -1815,11 +1820,51 @@ func (txNums) FindBlockNum(tx kv.Tx, endTxNumMinimax uint64) (ok bool, blockNum 
 
 	blockNum = uint64(sort.Search(int(cnt), func(i int) bool {
 		binary.BigEndian.PutUint64(seek[:], uint64(i))
-		_, v, _ := c.SeekExact(seek[:])
+		var v []byte
+		_, v, err = c.SeekExact(seek[:])
 		return binary.BigEndian.Uint64(v) >= endTxNumMinimax
 	}))
+	if err != nil {
+		return false, 0, err
+	}
 	if blockNum == cnt {
 		return false, 0, nil
 	}
 	return true, blockNum, nil
+}
+
+func ReadVerkleRoot(tx kv.Tx, blockNum uint64) (common.Hash, error) {
+	root, err := tx.GetOne(kv.VerkleRoots, dbutils.EncodeBlockNumber(blockNum))
+	if err != nil {
+		return common.Hash{}, err
+	}
+
+	return common.BytesToHash(root), nil
+}
+
+func WriteVerkleRoot(tx kv.RwTx, blockNum uint64, root common.Hash) error {
+	return tx.Put(kv.VerkleRoots, dbutils.EncodeBlockNumber(blockNum), root[:])
+}
+
+func WriteVerkleNode(tx kv.RwTx, node verkle.VerkleNode) error {
+	var (
+		root    common.Hash
+		encoded []byte
+		err     error
+	)
+	root = node.Commitment().Bytes()
+	encoded, err = node.Serialize()
+	if err != nil {
+		return err
+	}
+
+	return tx.Put(kv.VerkleTrie, root[:], encoded)
+}
+
+func ReadVerkleNode(tx kv.RwTx, root common.Hash) (verkle.VerkleNode, error) {
+	encoded, err := tx.GetOne(kv.VerkleTrie, root[:])
+	if err != nil {
+		return nil, err
+	}
+	return verkle.ParseNode(encoded, 0, root[:])
 }
