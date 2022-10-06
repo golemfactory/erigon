@@ -3,7 +3,7 @@ name: Publish Docker image
 on:
   push:
     branches:
-      - "otterscan-develop"
+      - "gpi-develop"
       - "setup-docker"
     tags:
       - "*-otterscan"
