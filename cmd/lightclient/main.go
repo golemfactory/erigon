@@ -15,13 +15,13 @@ package main
 
 import (
 	"context"
-	"encoding/hex"
 	"time"
 
 	"github.com/ledgerwatch/erigon/cmd/lightclient/clparams"
+	"github.com/ledgerwatch/erigon/cmd/lightclient/cltypes"
 	"github.com/ledgerwatch/erigon/cmd/lightclient/sentinel"
-	"github.com/ledgerwatch/erigon/cmd/lightclient/sentinel/proto"
-	"github.com/ledgerwatch/erigon/cmd/lightclient/sentinel/proto/p2p"
+	"github.com/ledgerwatch/erigon/cmd/lightclient/sentinel/communication"
+	"github.com/ledgerwatch/erigon/cmd/lightclient/utils"
 	"github.com/ledgerwatch/log/v3"
 )
 
@@ -33,19 +33,14 @@ var (
 
 func main() {
 	log.Root().SetHandler(log.LvlFilterHandler(log.LvlInfo, log.StderrHandler))
-	discCfg, genesisCfg, networkCfg, beaconCfg, err := clparams.GetConfigsByNetwork(clparams.MainnetNetwork)
-	if err != nil {
-		log.Error("error", "err", err)
-		return
-	}
+	genesisCfg, networkCfg, beaconCfg := clparams.GetConfigsByNetwork(clparams.MainnetNetwork)
 	sent, err := sentinel.New(context.Background(), &sentinel.SentinelConfig{
-		IpAddr:         defaultIpAddr,
-		Port:           defaultPort,
-		TCPPort:        defaultTcpPort,
-		DiscoverConfig: *discCfg,
-		GenesisConfig:  &genesisCfg,
-		NetworkConfig:  &networkCfg,
-		BeaconConfig:   &beaconCfg,
+		IpAddr:        defaultIpAddr,
+		Port:          defaultPort,
+		TCPPort:       defaultTcpPort,
+		GenesisConfig: genesisCfg,
+		NetworkConfig: networkCfg,
+		BeaconConfig:  beaconCfg,
 	})
 	if err != nil {
 		log.Error("error", "err", err)
@@ -76,7 +71,7 @@ func main() {
 	}
 
 	logInterval := time.NewTicker(5 * time.Second)
-	sendReqInterval := time.NewTicker(1 * time.Second)
+	sendReqInterval := time.NewTicker(500 * time.Millisecond)
 
 	for {
 		select {
@@ -86,35 +81,58 @@ func main() {
 		case pkt := <-sent.RecvGossip():
 			handleGossipPacket(pkt)
 		case <-sendReqInterval.C:
-			if _, err := sent.SendPingReqV1(); err != nil {
-				log.Warn("failed to send ping request", "err", err)
-			}
-			if _, err := sent.SendMetadataReqV1(); err != nil {
-				log.Warn("failed to send metadata request", "err", err)
-			}
+			go func() {
+				var resp communication.Packet
+				var err error
+				if resp, err = sent.SendPingReqV1Raw(); err != nil {
+					log.Warn("failed to send ping request", "err", err)
+				}
+				if resp != nil {
+					log.Info("Ping responded", "msg", resp.(*cltypes.Ping))
+				}
+				if _, err = sent.SendMetadataReqV1Raw(); err != nil {
+					log.Warn("failed to send ping request", "err", err)
+				}
+				if resp, err = sent.SendLightClientFinaltyUpdateReqV1(); err != nil {
+					log.Warn("failed to send metadata request", "err", err)
+				}
+				if resp != nil {
+					log.Info("Lightclient responded", "msg", resp.(*cltypes.LightClientFinalityUpdate).AttestedHeader)
+				}
+
+			}()
 		}
 	}
 }
 
-func handleGossipPacket(pkt *proto.GossipContext) error {
-	log.Info("[Gossip] Received Packet", "topic", pkt.Topic)
+func handleGossipPacket(pkt *communication.GossipContext) error {
+	log.Trace("[Gossip] Received Packet", "topic", pkt.Topic)
 	switch u := pkt.Packet.(type) {
-	case *p2p.SignedBeaconBlockBellatrix:
-		log.Info("[Gossip] beacon_block",
+	case *cltypes.SignedBeaconBlockBellatrix:
+		/*log.Info("[Gossip] beacon_block",
 			"Slot", u.Block.Slot,
-			"Signature", hex.EncodeToString(u.Signature[:]),
-			"graffiti", string(u.Block.Body.Graffiti[:]),
-			"eth1_blockhash", hex.EncodeToString(u.Block.Body.Eth1Data.BlockHash[:]),
-			"stateRoot", hex.EncodeToString(u.Block.StateRoot[:]),
-			"parentRoot", hex.EncodeToString(u.Block.ParentRoot[:]),
+			"Signature", hex.EncodeToString(u.Signature),
+			"graffiti", string(u.Block.Body.Graffiti),
+			"eth1_blockhash", hex.EncodeToString(u.Block.Body.Eth1Data.BlockHash),
+			"stateRoot", hex.EncodeToString(u.Block.StateRoot),
+			"parentRoot", hex.EncodeToString(u.Block.ParentRoot),
 			"proposerIdx", u.Block.ProposerIndex,
-		)
+		)*/
 		err := pkt.Codec.WritePacket(context.TODO(), pkt.Packet)
 		if err != nil {
 			log.Warn("[Gossip] Error Forwarding Packet", "err", err)
 		}
-	case *p2p.LightClientFinalityUpdate:
-	case *p2p.LightClientOptimisticUpdate:
+	case *cltypes.LightClientFinalityUpdate:
+		err := pkt.Codec.WritePacket(context.TODO(), pkt.Packet)
+		if err != nil {
+			log.Warn("[Gossip] Error Forwarding Packet", "err", err)
+		}
+		log.Info("[Gossip] Got Finalty Update", "sig", utils.BytesToHex(u.SyncAggregate.SyncCommiteeSignature[:]))
+	case *cltypes.LightClientOptimisticUpdate:
+		err := pkt.Codec.WritePacket(context.TODO(), pkt.Packet)
+		if err != nil {
+			log.Warn("[Gossip] Error Forwarding Packet", "err", err)
+		}
 	default:
 	}
 	return nil

@@ -18,34 +18,37 @@ import (
 	"crypto/ecdsa"
 	"fmt"
 	"net"
+	"strings"
 
+	"github.com/ledgerwatch/erigon/cmd/lightclient/cltypes"
 	"github.com/ledgerwatch/erigon/cmd/lightclient/fork"
+	"github.com/ledgerwatch/erigon/cmd/lightclient/sentinel/communication"
 	"github.com/ledgerwatch/erigon/cmd/lightclient/sentinel/handlers"
 	"github.com/ledgerwatch/erigon/cmd/lightclient/sentinel/peers"
-	"github.com/ledgerwatch/erigon/cmd/lightclient/sentinel/proto"
+	"github.com/ledgerwatch/erigon/crypto"
 	"github.com/ledgerwatch/erigon/p2p/discover"
 	"github.com/ledgerwatch/erigon/p2p/enode"
 	"github.com/ledgerwatch/erigon/p2p/enr"
 	"github.com/ledgerwatch/log/v3"
 	"github.com/libp2p/go-libp2p"
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
-	pubsub_pb "github.com/libp2p/go-libp2p-pubsub/pb"
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/p2p/protocol/identify"
 	"github.com/pkg/errors"
 )
 
 type Sentinel struct {
-	started  bool
-	listener *discover.UDPv5 // this is us in the network.
-	ctx      context.Context
-	host     host.Host
-	cfg      *SentinelConfig
-	peers    *peers.Peers
+	started    bool
+	listener   *discover.UDPv5 // this is us in the network.
+	ctx        context.Context
+	host       host.Host
+	cfg        *SentinelConfig
+	peers      *peers.Peers
+	metadataV1 *cltypes.MetadataV2
 
-	pubsub *pubsub.PubSub
-
-	subManager *GossipManager
+	discoverConfig discover.Config
+	pubsub         *pubsub.PubSub
+	subManager     *GossipManager
 }
 
 func (s *Sentinel) createLocalNode(
@@ -78,7 +81,7 @@ func (s *Sentinel) createListener() (*discover.UDPv5, error) {
 	var (
 		ipAddr  = s.cfg.IpAddr
 		port    = s.cfg.Port
-		discCfg = s.cfg.DiscoverConfig
+		discCfg = s.discoverConfig
 	)
 
 	ip := net.ParseIP(ipAddr)
@@ -117,8 +120,15 @@ func (s *Sentinel) createListener() (*discover.UDPv5, error) {
 		return nil, err
 	}
 
+	// TODO: Set up proper attestation number
+	s.metadataV1 = &cltypes.MetadataV2{
+		SeqNumber: localNode.Seq(),
+		Attnets:   0,
+		Syncnets:  0,
+	}
+
 	// Start stream handlers
-	handlers.NewConsensusHandlers(s.host, s.peers).Start()
+	handlers.NewConsensusHandlers(s.host, s.peers, s.metadataV1).Start()
 
 	net, err := discover.ListenV5(s.ctx, conn, localNode, discCfg)
 	if err != nil {
@@ -132,9 +142,7 @@ func (s *Sentinel) pubsubOptions() []pubsub.Option {
 	gsp := pubsub.DefaultGossipSubParams()
 	psOpts := []pubsub.Option{
 		pubsub.WithMessageSignaturePolicy(pubsub.StrictNoSign),
-		pubsub.WithMessageIdFn(func(pmsg *pubsub_pb.Message) string {
-			return fork.MsgID(pmsg, s.cfg.NetworkConfig, s.cfg.BeaconConfig, s.cfg.GenesisConfig)
-		}),
+		pubsub.WithMessageIdFn(fork.MsgID),
 		pubsub.WithNoAuthor(),
 		pubsub.WithSubscriptionFilter(nil),
 		pubsub.WithPeerOutboundQueueSize(pubsubQueueSize),
@@ -153,6 +161,24 @@ func New(
 	s := &Sentinel{
 		ctx: ctx,
 		cfg: cfg,
+	}
+
+	// Setup discovery
+	enodes := make([]*enode.Node, len(cfg.NetworkConfig.BootNodes))
+	for i, bootnode := range cfg.NetworkConfig.BootNodes {
+		newNode, err := enode.Parse(enode.ValidSchemes, bootnode)
+		if err != nil {
+			return nil, err
+		}
+		enodes[i] = newNode
+	}
+	privateKey, err := crypto.GenerateKey()
+	if err != nil {
+		return nil, err
+	}
+	s.discoverConfig = discover.Config{
+		PrivateKey: privateKey,
+		Bootnodes:  enodes,
 	}
 
 	opts, err := buildOptions(cfg, s)
@@ -177,7 +203,7 @@ func New(
 	return s, nil
 }
 
-func (s *Sentinel) RecvGossip() <-chan *proto.GossipContext {
+func (s *Sentinel) RecvGossip() <-chan *communication.GossipContext {
 	return s.subManager.Recv()
 }
 
@@ -192,6 +218,7 @@ func (s *Sentinel) Start(
 	if err != nil {
 		return fmt.Errorf("failed creating sentinel listener err=%w", err)
 	}
+
 	if err := s.connectToBootnodes(); err != nil {
 		return fmt.Errorf("failed to connect to bootnodes err=%w", err)
 	}
@@ -205,9 +232,20 @@ func (s *Sentinel) String() string {
 }
 
 func (s *Sentinel) HasTooManyPeers() bool {
-	return s.GetPeersCount() >= peers.DefaultMaxPeers
+	return len(s.host.Network().Peers()) >= peers.DefaultMaxPeers
 }
 
 func (s *Sentinel) GetPeersCount() int {
-	return len(s.host.Network().Peers())
+	// Check how many peers are subscribed to beacon block
+	var sub *GossipSubscription
+	for topic, currSub := range s.subManager.subscriptions {
+		if strings.Contains(topic, string(LightClientFinalityUpdateTopic)) {
+			sub = currSub
+		}
+	}
+
+	if sub == nil {
+		return len(s.host.Network().Peers())
+	}
+	return len(sub.topic.ListPeers())
 }

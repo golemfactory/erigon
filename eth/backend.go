@@ -46,15 +46,13 @@ import (
 	txpool2 "github.com/ledgerwatch/erigon-lib/txpool"
 	"github.com/ledgerwatch/erigon-lib/txpool/txpooluitl"
 	types2 "github.com/ledgerwatch/erigon-lib/types"
-	"github.com/ledgerwatch/log/v3"
-	"golang.org/x/exp/slices"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials"
-	"google.golang.org/protobuf/types/known/emptypb"
-
 	"github.com/ledgerwatch/erigon/cmd/downloader/downloader"
 	"github.com/ledgerwatch/erigon/cmd/downloader/downloader/downloadercfg"
 	"github.com/ledgerwatch/erigon/cmd/downloader/downloadergrpc"
+	"github.com/ledgerwatch/erigon/cmd/lightclient/clparams"
+	"github.com/ledgerwatch/erigon/cmd/lightclient/lightclient"
+	"github.com/ledgerwatch/erigon/cmd/lightclient/sentinel"
+	"github.com/ledgerwatch/erigon/cmd/lightclient/sentinel/service"
 	"github.com/ledgerwatch/erigon/cmd/rpcdaemon/cli"
 	"github.com/ledgerwatch/erigon/cmd/rpcdaemon/commands"
 	"github.com/ledgerwatch/erigon/cmd/sentry/sentry"
@@ -92,6 +90,11 @@ import (
 	"github.com/ledgerwatch/erigon/turbo/snapshotsync/snap"
 	stages2 "github.com/ledgerwatch/erigon/turbo/stages"
 	"github.com/ledgerwatch/erigon/turbo/stages/headerdownload"
+	"github.com/ledgerwatch/log/v3"
+	"golang.org/x/exp/slices"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
+	"google.golang.org/protobuf/types/known/emptypb"
 )
 
 // Config contains the configuration options of the ETH protocol.
@@ -367,7 +370,7 @@ func New(stack *node.Node, config *ethconfig.Config, logger log.Logger) (*Ethere
 		consensusConfig = &config.Ethash
 	}
 	backend.engine = ethconsensusconfig.CreateConsensusEngine(chainConfig, logger, consensusConfig, config.Miner.Notify, config.Miner.Noverify, config.HeimdallURL, config.WithoutHeimdall, stack.DataDir(), allSnapshots, false /* readonly */, backend.chainDB)
-	backend.forkValidator = engineapi.NewForkValidator(currentBlockNumber, inMemoryExecution)
+	backend.forkValidator = engineapi.NewForkValidator(currentBlockNumber, inMemoryExecution, tmpdir)
 
 	backend.sentriesClient, err = sentry.NewMultiClient(
 		chainKv,
@@ -441,7 +444,7 @@ func New(stack *node.Node, config *ethconfig.Config, logger log.Logger) (*Ethere
 				stagedsync.StageMiningFinishCfg(backend.chainDB, *backend.chainConfig, backend.engine, miningStatePos, backend.miningSealingQuit),
 			), stagedsync.MiningUnwindOrder, stagedsync.MiningPruneOrder)
 		// We start the mining step
-		if err := stages2.MiningStep(ctx, backend.chainDB, proposingSync); err != nil {
+		if err := stages2.MiningStep(ctx, backend.chainDB, proposingSync, tmpdir); err != nil {
 			return nil, err
 		}
 		block := <-miningStatePos.MiningResultPOSCh
@@ -452,6 +455,32 @@ func New(stack *node.Node, config *ethconfig.Config, logger log.Logger) (*Ethere
 	ethBackendRPC := privateapi.NewEthBackendServer(ctx, backend, backend.chainDB, backend.notifications.Events,
 		blockReader, chainConfig, assembleBlockPOS, backend.sentriesClient.Hd, config.Miner.EnabledPOS)
 	miningRPC = privateapi.NewMiningServer(ctx, backend, ethashApi)
+
+	if config.CL {
+		// Chains supported are Sepolia, Mainnet and Goerli
+		if config.NetworkID == 1 || config.NetworkID == 5 || config.NetworkID == 11155111 {
+			genesisCfg, networkCfg, beaconCfg := clparams.GetConfigsByNetwork(clparams.NetworkType(config.NetworkID))
+			if err != nil {
+				return nil, err
+			}
+			client, err := service.StartSentinelService(&sentinel.SentinelConfig{
+				IpAddr:        "127.0.0.1",
+				Port:          4000,
+				TCPPort:       4001,
+				GenesisConfig: genesisCfg,
+				NetworkConfig: networkCfg,
+				BeaconConfig:  beaconCfg,
+			}, &service.ServerConfig{Network: "tcp", Addr: "localhost:7777"})
+			if err != nil {
+				return nil, err
+			}
+
+			lc := lightclient.NewLightClient(ethBackendRPC, client)
+			go lc.Start(ctx)
+		} else {
+			log.Warn("Cannot run lightclient on a non-supported chain. only goerli, sepolia and mainnet are allowed")
+		}
+	}
 
 	if stack.Config().PrivateApiAddr != "" {
 		var creds credentials.TransportCredentials
@@ -545,7 +574,7 @@ func New(stack *node.Node, config *ethconfig.Config, logger log.Logger) (*Ethere
 		}
 	}()
 
-	if err := backend.StartMining(context.Background(), backend.chainDB, mining, backend.config.Miner, backend.gasPrice, backend.sentriesClient.Hd.QuitPoWMining); err != nil {
+	if err := backend.StartMining(context.Background(), backend.chainDB, mining, backend.config.Miner, backend.gasPrice, backend.sentriesClient.Hd.QuitPoWMining, tmpdir); err != nil {
 		return nil, err
 	}
 
@@ -667,7 +696,7 @@ func (s *Ethereum) shouldPreserve(block *types.Block) bool { //nolint
 // StartMining starts the miner with the given number of CPU threads. If mining
 // is already running, this method adjust the number of threads allowed to use
 // and updates the minimum price required by the transaction pool.
-func (s *Ethereum) StartMining(ctx context.Context, db kv.RwDB, mining *stagedsync.Sync, cfg params.MiningConfig, gasPrice *uint256.Int, quitCh chan struct{}) error {
+func (s *Ethereum) StartMining(ctx context.Context, db kv.RwDB, mining *stagedsync.Sync, cfg params.MiningConfig, gasPrice *uint256.Int, quitCh chan struct{}, tmpDir string) error {
 	if !cfg.Enabled {
 		return nil
 	}
@@ -769,7 +798,7 @@ func (s *Ethereum) StartMining(ctx context.Context, db kv.RwDB, mining *stagedsy
 
 			if !works && hasWork {
 				works = true
-				go func() { errc <- stages2.MiningStep(ctx, db, mining) }()
+				go func() { errc <- stages2.MiningStep(ctx, db, mining, tmpDir) }()
 			}
 		}
 	}()
@@ -856,8 +885,11 @@ func (s *Ethereum) setUpBlockReader(ctx context.Context, dirs datadir.Dirs, snCo
 	}
 
 	dir.MustExist(dirs.SnapHistory)
-	agg, err := libstate.NewAggregator22(dirs.SnapHistory, ethconfig.HistoryV3AggregationStep)
+	agg, err := libstate.NewAggregator22(dirs.SnapHistory, ethconfig.HistoryV3AggregationStep, s.chainDB)
 	if err != nil {
+		return nil, nil, nil, err
+	}
+	if err = agg.ReopenFiles(); err != nil {
 		return nil, nil, nil, err
 	}
 

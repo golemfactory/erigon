@@ -254,7 +254,7 @@ func MockWithEverything(t *testing.T, gspec *core.Genesis, key *ecdsa.PrivateKey
 
 	if cfg.HistoryV3 {
 		dir.MustExist(dirs.SnapHistory)
-		mock.agg, err = libstate.NewAggregator22(dirs.SnapHistory, ethconfig.HistoryV3AggregationStep)
+		mock.agg, err = libstate.NewAggregator22(dirs.SnapHistory, ethconfig.HistoryV3AggregationStep, db)
 		if err != nil {
 			panic(err)
 		}
@@ -345,7 +345,7 @@ func MockWithEverything(t *testing.T, gspec *core.Genesis, key *ecdsa.PrivateKey
 	blockRetire := snapshotsync.NewBlockRetire(1, dirs.Tmp, allSnapshots, mock.DB, snapshotsDownloader, mock.Notifications.Events)
 	mock.Sync = stagedsync.New(
 		stagedsync.DefaultStages(mock.Ctx, prune,
-			stagedsync.StageSnapshotsCfg(mock.DB, *mock.ChainConfig, dirs.Tmp, allSnapshots, blockRetire, snapshotsDownloader, blockReader, mock.Notifications.Events, mock.HistoryV3, mock.agg),
+			stagedsync.StageSnapshotsCfg(mock.DB, *mock.ChainConfig, dirs, allSnapshots, blockRetire, snapshotsDownloader, blockReader, mock.Notifications.Events, mock.HistoryV3, mock.agg),
 			stagedsync.StageHeadersCfg(
 				mock.DB,
 				mock.sentriesClient.Hd,
