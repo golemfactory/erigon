@@ -1,0 +1,100 @@
+name: Build release
+on:
+  push:
+    branches:
+      - "gpi-develop"
+    tags:
+      - 'v*-gpi'
+
+jobs:
+  create-release:
+    name: Create release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Create Release
+        uses: actions/github-script@v3.0
+        with:
+          github-token: ${{secrets.GITHUB_TOKEN}}
+          script: |
+            let tag = context.payload.ref.replace(/.*\//, '');
+            let buildNo = context.runNumber;
+            let versionName = tag.replace(/^pre-rel-/,'');
+            try {
+              let release =  await github.request("GET /repos/:owner/:repo/releases/tags/:tag", {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                tag: tag
+              });
+            }
+            catch(e) {
+              let body = ["rpi build of erigon"].join("\n");
+
+              let release =  await github.request("POST /repos/:owner/:repo/releases", {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                data: {
+                  tag_name: tag,
+                  prerelease: true,
+                  body: body,
+                  name: `${versionName} #${buildNo}`
+                }
+              });
+              console.log(release.data.upload_url);
+            }
+  build:
+    name: Build Release
+    needs: create-release
+    runs-on: [self-hosted, linux, ARM64, rpi]
+    steps:
+      - name: Get upload url
+        id: release_upload_url
+        uses: actions/github-script@0.9.0
+        with:
+          github-token: ${{secrets.GITHUB_TOKEN}}
+          result-encoding: string
+          script: |
+            let tag = context.payload.ref.replace(/.*\//, '');
+            let release =  await github.request("GET /repos/:owner/:repo/releases/tags/:tag", {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              tag: tag
+            });
+            console.log(release.data.upload_url);
+            return release.data.upload_url
+      - name: Checkout
+        uses: actions/checkout@v3
+        with:
+          submodules: recursive
+          fetch-depth: 0 # fetch git tags for "git describe"
+      - name: Build
+        run: |
+          make erigon
+      - name: Pack
+        id: pack
+        shell: bash
+        env:
+          GITHUB_REF: ${{ github.ref }}
+        run: |
+          build() {
+            TAG_NAME="${GITHUB_REF##*/}"
+            TARGET_DIR=releases/erigon-arm64-${TAG_NAME}
+            mkdir -p "$TARGET_DIR"
+            echo cp build/bin/erigon "$TARGET_DIR"
+            cp build/bin/erigon "$TARGET_DIR"
+            PACKAGE="erigon-arm64-${TAG_NAME}.tar.gz"
+            cd releases && tar czvf "$PACKAGE" "erigon-arm64-${TAG_NAME}"
+            echo "::set-output name=artifact::$PACKAGE"
+            echo "::set-output name=media::application/tar+gzip"
+          }
+          build
+      - name: Upload Release Asset
+        id: upload-release-asset-req
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.release_upload_url.outputs.result }}
+          asset_path: ./releases/${{ steps.pack.outputs.artifact }}
+          asset_name: ${{ steps.pack.outputs.artifact }}
+          asset_content_type: ${{ steps.pack.outputs.media }}
+
